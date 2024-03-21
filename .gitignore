@@ -16,6 +16,7 @@ simu_sereega/plot/
 simu_sereega/pop/
 simu_sereega/signal/
 simu_sereega/utils/
+simu_sereega/mains/
 simu_sereega/*.csv
 
 *.pyc 
