@@ -75,7 +75,15 @@ python simu_extended_source.py -sin mes_debug_python -ne 100 -mk standard_1020 -
 
 # NMM based data simulation 
 original code from: https://github.com/bfinl/DeepSIF
+Code was modified to make it work on our machines. 
 
+First load the anatomy data from the original deepSIF code github, and place it in a "anatomy" folder
+
+
+- To launch TVB simulation of raw NMM data: bash_tvb_simu.sh /!\ here: maybe change the path to anatomy folder
+- Then post process data using: 
+	- process_raw_nmm.m
+	- generate_synthetic_data.m
 
 
 # References 
