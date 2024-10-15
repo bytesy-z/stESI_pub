@@ -73,8 +73,8 @@ python simu_extended_source.py -sin mes_debug_python -ne 100 -mk standard_1020 -
 ```
 
 
-# NMM based data simulation -to come-
-
+# NMM based data simulation 
+original code from: https://github.com/bfinl/DeepSIF
 
 
 
