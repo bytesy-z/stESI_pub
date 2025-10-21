@@ -102,12 +102,12 @@ def _plot_heatmap(ax, geom: BrainGeometry, activity: np.ndarray, title: str, nor
     for surf in geom.surfaces:
         mesh = Poly3DCollection(
             surf.vertices_mm[surf.faces],
-            alpha=0.05,
-            facecolor=(0.8, 0.8, 0.8),
-            edgecolor="none",
+            linewidths=0.2,
         )
+        mesh.set_facecolor((0.78, 0.78, 0.82, 1.0))
+        mesh.set_edgecolor((0.4, 0.4, 0.45))
+        mesh.set_alpha(0.35)
         ax.add_collection3d(mesh)
-
     scatter = ax.scatter(
         geom.positions_mm[:, 0],
         geom.positions_mm[:, 1],
@@ -146,6 +146,81 @@ def _infer_model(
         pred_scaled = pred_norm * max_src_val
 
     return pred_scaled
+
+
+def _save_interactive_heatmap(
+    geom: BrainGeometry,
+    activity: np.ndarray,
+    title: str,
+    cmap_name: str,
+    output_path: Path,
+) -> None:
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        print("Plotly is not installed; skipping interactive heatmap export.")
+        return
+
+    vmax = max(float(activity.max()), 1e-9)
+    cmap = plt.get_cmap(cmap_name)
+    steps = 32
+    colorscale = [
+        [i / (steps - 1), f"rgb({int(r * 255)}, {int(g * 255)}, {int(b * 255)})"]
+        for i, (r, g, b, _) in enumerate(cmap(np.linspace(0.0, 1.0, steps)))
+    ]
+
+    fig = go.Figure()
+    for surf in geom.surfaces:
+        fig.add_trace(
+            go.Mesh3d(
+                x=surf.vertices_mm[:, 0],
+                y=surf.vertices_mm[:, 1],
+                z=surf.vertices_mm[:, 2],
+                i=surf.faces[:, 0],
+                j=surf.faces[:, 1],
+                k=surf.faces[:, 2],
+                color="lightgray",
+                opacity=0.4,
+                flatshading=True,
+                lighting=dict(ambient=0.6, diffuse=0.7, specular=0.15, roughness=0.8),
+                lightposition=dict(x=100, y=40, z=80),
+                name="Cortical surface",
+                hoverinfo="skip",
+                showscale=False,
+            )
+        )
+
+    fig.add_trace(
+        go.Scatter3d(
+            x=geom.positions_mm[:, 0],
+            y=geom.positions_mm[:, 1],
+            z=geom.positions_mm[:, 2],
+            mode="markers",
+            marker=dict(
+                size=4,
+                color=activity,
+                colorscale=colorscale,
+                cmin=0.0,
+                cmax=vmax,
+                colorbar=dict(title="|Activity|"),
+                opacity=0.6,
+            ),
+            name="Inferred activity",
+        )
+    )
+
+    fig.update_layout(
+        title=title,
+        scene=dict(
+            xaxis_title="X (mm)",
+            yaxis_title="Y (mm)",
+            zaxis_title="Z (mm)",
+            aspectmode="data",
+        ),
+        margin=dict(l=0, r=0, b=0, t=60),
+    )
+    fig.write_html(str(output_path), include_plotlyjs="cdn")
+    print(f"Saved interactive heatmap to {output_path}")
 
 
 def main() -> None:
@@ -288,7 +363,7 @@ def main() -> None:
 
     fig.subplots_adjust(wspace=0.05, hspace=0.0)
     cbar = fig.colorbar(sc2, ax=[ax_gt, ax_pred], shrink=0.75, pad=0.02)
-    cbar.set_label("|Activity| (a.u.)")
+    cbar.set_label("|Activity|")
 
     fig.suptitle(
         f"Simulation '{args.simu_name}' — sample {args.sample_idx} @ t={peak_t} (of {src_sample.shape[1]} time points)",
@@ -308,6 +383,15 @@ def main() -> None:
     figure_path = output_dir / f"{args.simu_name}_sample{args.sample_idx:03d}_t{peak_t}.png"
     fig.savefig(figure_path, dpi=200, bbox_inches="tight")
 
+    interactive_path = output_dir / f"{args.simu_name}_sample{args.sample_idx:03d}_t{peak_t}_interactive.html"
+    _save_interactive_heatmap(
+        geom,
+        pred_activity,
+        f"1dCNN Inferred Activity — t={peak_t}",
+        args.cmap,
+        interactive_path,
+    )
+
     print(f"Saved heatmap figure to {figure_path}")
 
     if args.show:
@@ -317,4 +401,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    main()
     main()
