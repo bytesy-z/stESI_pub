@@ -6,8 +6,10 @@ modification august 2023 - to use with deepsif datasets (neural mass model based
 import argparse
 import datetime
 import os
+import re
 import sys
 from os.path import expanduser
+from pathlib import Path
 
 # Import librairies
 import mne
@@ -141,10 +143,36 @@ parser.add_argument(
 args = parser.parse_args()
 #----------------------------------------------------------------------#
 root_simu = args.root_simu
-results_path = args.results_path
+
+# Always store evaluation artifacts inside the repository results directory.
+repo_root = Path(__file__).resolve().parent.parent
+repo_results_dir = (repo_root / "results").resolve()
+
+requested_results = Path(args.results_path).expanduser()
+if not requested_results.is_absolute():
+    requested_results = (repo_results_dir / requested_results).resolve()
+else:
+    requested_results = requested_results.resolve()
+
+try:
+    requested_results.relative_to(repo_results_dir)
+    results_base_path = requested_results
+except ValueError:
+    print(
+        "Requested results_path is outside the repository. Redirecting to project results directory:"
+        f" {repo_results_dir}"
+    )
+    results_base_path = repo_results_dir
+
+results_base_path.mkdir(parents=True, exist_ok=True)
+
 dataset = f"{args.simu_name}{args.source_space}_"
-eval_results_path = f"{results_path}/{dataset}/eval/{args.sfolder}"
-os.makedirs(eval_results_path, exist_ok=True)
+eval_results_path_path = results_base_path / dataset / "eval" / args.sfolder
+eval_results_path_path.mkdir(parents=True, exist_ok=True)
+
+results_path = str(results_base_path)
+eval_results_path = str(eval_results_path_path)
+print(f"Saving evaluation outputs to {eval_results_path}")
 
 ##----------------LOAD EVAL DATA---------------------##
 simu_path = f"{root_simu}/{args.orientation}/{args.electrode_montage}/{args.source_space}/simu/{args.simu_name}"
@@ -166,59 +194,97 @@ if args.source_space == "fsav_994" :
 else : 
     fwd = head_model.fwd['sol']['data']
 
-## open neighbors file if it was already re-shaped
-if os.path.isfile(f"{folders.model_folder}/fs_cortex_neighbors_994.mat"):
-    neighbors = (
-        loadmat(f"{folders.model_folder}/fs_cortex_neighbors_994.mat")["nbs"] - 1
-    )
-else:  # reshape and save otherwise
-    neighbors = loadmat(f"{folders.model_folder}/fs_cortex_20k_region_mapping.mat")[
-        "nbs"
-    ][0]
-    ### reformater
-    m = -1
-    for n in neighbors:
-        if n.shape[1] > m:
-            m = n.shape[1]
-    neighbors_ref = np.ones((neighbors.shape[0], m), dtype=int) * (-1)
-    for r in range(neighbors_ref.shape[0]):
-        nbs = neighbors[r][0]
-        neighbors_ref[r, : len(nbs)] = nbs
+# Only load neighbors and region mapping if needed by selected methods
+methods = args.methods
+need_neighbors = any(m in methods for m in ["deep_sif", "lstm", "MNE", "sLORETA"])  # add other methods if needed
+need_region_mapping = any(m in methods for m in ["deep_sif", "lstm", "MNE", "sLORETA"])  # add other methods if needed
 
-    from scipy.io import savemat
+neighbors = None
+region_mapping = None
+fwd_vertices = None
+fwd_regions = None
+n_vertices = None
+n_regs = None
 
-    savemat(
-        f"{folders.model_folder}/fs_cortex_neighbors_994.mat", {"nbs": neighbors_ref}
-    )
+if need_neighbors:
+    if os.path.isfile(f"{folders.model_folder}/fs_cortex_neighbors_994.mat"):
+        neighbors = (
+            loadmat(f"{folders.model_folder}/fs_cortex_neighbors_994.mat")["nbs"] - 1
+        )
+    else:
+        try:
+            neighbors_mat = loadmat(f"{folders.model_folder}/fs_cortex_20k_region_mapping.mat")
+            neighbors = neighbors_mat["nbs"][0]
+            m = -1
+            for n in neighbors:
+                if n.shape[1] > m:
+                    m = n.shape[1]
+            neighbors_ref = np.ones((neighbors.shape[0], m), dtype=int) * (-1)
+            for r in range(neighbors_ref.shape[0]):
+                nbs = neighbors[r][0]
+                neighbors_ref[r, : len(nbs)] = nbs
+            from scipy.io import savemat
+            savemat(
+                f"{folders.model_folder}/fs_cortex_neighbors_994.mat", {"nbs": neighbors_ref}
+            )
+            neighbors = neighbors_ref
+        except Exception:
+            neighbors = None
 
+if need_region_mapping:
+    try:
+        region_mapping = loadmat(f"{folders.model_folder}/fs_cortex_20k_region_mapping.mat")["rm"][0]
+    except Exception:
+        region_mapping = None
+
+if need_region_mapping or need_neighbors:
+    try:
+        fwd_vertices = mne.read_forward_solution(
+            f"{folders.model_folder}/fwd_verticesfsav_994-fwd.fif"
+        )
+        fwd_vertices = mne.convert_forward_solution(
+            fwd_vertices, surf_ori=True, force_fixed=True, use_cps=True, verbose=0
+        )
+        fwd_regions = mne.read_forward_solution(f"{folders.model_folder}/fwd_fsav_994-fwd.fif")
+        fwd_regions = mne.convert_forward_solution(
+            fwd_regions, surf_ori=True, force_fixed=True, use_cps=True, verbose=0
+        )
+        fwd_regions["sol"]["data"] = fwd
+        n_vertices = fwd_vertices["nsource"]
+        n_regs = len(np.unique(region_mapping)) if region_mapping is not None else None
+    except Exception:
+        fwd_vertices = None
+        fwd_regions = None
+        n_vertices = None
+        n_regs = None
+
+if neighbors is None:
+    # Build a simple k-nearest-neighbor graph from source positions as a fallback.
+    pos = source_space.positions
+    n_sources_local = pos.shape[0]
+    k = min(6, max(n_sources_local - 1, 1))
+    if k <= 0:
+        neighbors = np.full((n_sources_local, 1), -1, dtype=int)
+    else:
+        # Compute pairwise distances in a memory-friendly way using broadcasting.
+        diff = pos[:, None, :] - pos[None, :, :]
+        dist_sq = np.sum(diff**2, axis=2)
+        np.fill_diagonal(dist_sq, np.inf)
+        idx = np.argpartition(dist_sq, range(k), axis=1)[:, :k]
+        neighbors = idx + 1  # use 1-based indexing to remain compatible with get_patch filtering
+
+if region_mapping is None:
+    region_mapping = np.arange(source_space.n_sources)
+    n_regs = len(region_mapping)
+
+if n_vertices is None:
+    n_vertices = source_space.n_sources
 
 fs = general_config_dict["rec_info"]["fs"]
 n_times = general_config_dict["rec_info"]["n_times"]
 t_vec = np.arange(0, n_times / fs, 1 / fs)
 spos = torch.from_numpy(source_space.positions)  # in meter
 mne_info = head_model.electrode_space.info
-
-### load the 2 source spaces and region mapping
-fwd_vertices = mne.read_forward_solution(
-    f"{folders.model_folder}/fwd_verticesfsav_994-fwd.fif"
-)
-fwd_vertices = mne.convert_forward_solution(
-    fwd_vertices, surf_ori=True, force_fixed=True, use_cps=True, verbose=0
-)
-fwd_regions = mne.read_forward_solution(f"{folders.model_folder}/fwd_fsav_994-fwd.fif")
-fwd_regions = mne.convert_forward_solution(
-    fwd_regions, surf_ori=True, force_fixed=True, use_cps=True, verbose=0
-)
-
-## !! assign fwd_region the proper leadfield matrix values (summed version)
-fwd_regions["sol"]["data"] = fwd
-
-region_mapping = loadmat(f"{folders.model_folder}/fs_cortex_20k_region_mapping.mat")[
-    "rm"
-][0]
-
-n_vertices = fwd_vertices["nsource"]
-n_regs = len(np.unique(region_mapping))
 ####################################################################
 ## load dataset
 if args.eval_simu_type.upper() == "NMM":
@@ -323,26 +389,115 @@ if "cnn_1d" in methods:
             )
         )
 
-    cnn_model_name = (
-        f"simu_{args.train_simu_type}_"
-        f"srcspace_{head_model.source_space.src_sampling}"
-        f"_model_1dcnn"
-        f"_interlayer_{ cnn1d_params['inter_layer'] }"
-        f"_trainset_{cnn1d_params['n_train_samples']}"
-        f"_epochs_{cnn1d_params['n_epochs']}"
-        f"_loss_{cnn1d_params['loss']}"
-        f"_norm_{cnn1d_params['norm']}.pt"
+    # Attempt to locate the trained model saved by main_train.py.
+    # Default naming in main_train.py uses the original model argument (typically "1dcnn").
+    expected_fragments = [
+        f"simu_{args.train_simu_type}".lower(),
+        f"srcspace_{head_model.source_space.src_sampling}".lower(),
+        f"interlayer_{cnn1d_params['inter_layer']}".lower()
+        if isinstance(cnn1d_params.get("inter_layer"), (int, float))
+        else None,
+        f"trainset_{cnn1d_params['n_train_samples']}"
+        if isinstance(cnn1d_params.get("n_train_samples"), (int, float))
+        and cnn1d_params["n_train_samples"] >= 0
+        else None,
+        f"epochs_{cnn1d_params['n_epochs']}"
+        if isinstance(cnn1d_params.get("n_epochs"), (int, float))
+        else None,
+        f"loss_{cnn1d_params['loss']}".lower() if cnn1d_params.get("loss") else None,
+        f"norm_{cnn1d_params['norm']}".lower() if cnn1d_params.get("norm") else None,
+        str(cnn1d_params.get("exp", "")).lower(),
+    ]
+    expected_fragments = [frag for frag in expected_fragments if frag]
+
+    target_filenames = {
+        "1dcnn_model.pt",
+        "1DCNN_model.pt",
+    }
+
+    candidate_paths = []
+
+    search_roots = {os.path.abspath(train_results_path)}
+
+    eval_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_results_root = os.path.abspath(
+        os.path.join(eval_dir, "..", "results", train_dataset)
     )
-    cnn_model_path = f"{train_results_path}/trained_models/{cnn1d_params['exp']}/{cnn_model_name}"
-    if os.path.exists(cnn_model_path):
-        print("CNN model is available for use")
+    search_roots.add(repo_results_root)
+
+    exp_folder = cnn1d_params.get("exp")
+    if exp_folder:
+        for base_root in list(search_roots):
+            search_roots.add(os.path.join(base_root, exp_folder))
+
+    for base_root in sorted(search_roots):
+        if not os.path.isdir(base_root):
+            continue
+        for root, _, files in os.walk(base_root):
+            for fname in files:
+                if fname in target_filenames or fname.lower() in target_filenames:
+                    candidate_paths.append(os.path.join(root, fname))
+
+    def _score_path(path: str) -> int:
+        plower = path.lower()
+        score = 0
+        for frag in expected_fragments:
+            if frag and frag in plower:
+                score += 1
+        return score
+
+    if candidate_paths:
+        candidate_paths.sort(key=lambda p: (_score_path(p), -len(p)))
+        cnn_model_path = candidate_paths[-1]
     else:
+        # Fallback to previously expected deterministic path for clarity in error.
+        subfolder = (
+            f"simu_{args.train_simu_type}_"
+            f"srcspace_{head_model.source_space.src_sampling}"
+            f"_model_1dcnn"
+            f"_interlayer_{cnn1d_params['inter_layer']}"
+            f"_trainset_{cnn1d_params['n_train_samples']}"
+            f"_epochs_{cnn1d_params['n_epochs']}"
+            f"_loss_{cnn1d_params['loss']}"
+            f"_norm_{cnn1d_params['norm']}"
+        )
+        fallback_path = (
+            f"{train_results_path}/{cnn1d_params.get('exp', '')}/{subfolder}/trained_models/1dcnn_model.pt"
+        )
+        searched_locations = "\n".join(
+            sorted({path for path in search_roots if os.path.isdir(path)})
+        ) or train_results_path
         sys.exit(
-            f"{cnn_model_path} \nCNN model is not accessible.\nTry other parameters or train your model first."
+            (
+                "Could not locate trained 1dCNN model.\n"
+                f"Searched under:\n{searched_locations}\n"
+                f"Expected filename(s): {', '.join(sorted(target_filenames))}\n"
+                f"Example expected folder: {fallback_path}"
+            )
         )
 
-    # from models.CNN1d_v1 import simple_1dCNN_v2 as cnn1d_net
-    from models.cnn_1d import CNN1Dpl as cnn1d_net
+    print(f"CNN model found at: {cnn_model_path}")
+
+    checkpoint_parent = os.path.dirname(os.path.dirname(cnn_model_path))
+    folder_signature = os.path.basename(checkpoint_parent).lower()
+
+    interlayer_match = re.search(r"interlayer_(\d+)", folder_signature)
+    if interlayer_match:
+        inter_layer_ckpt = int(interlayer_match.group(1))
+        if cnn1d_params.get("inter_layer") != inter_layer_ckpt:
+            print(
+                f"Updating inter_layer from {cnn1d_params.get('inter_layer')} to {inter_layer_ckpt} based on checkpoint"
+            )
+            cnn1d_params["inter_layer"] = inter_layer_ckpt
+
+    kernel_match = re.search(r"kernel(?:size)?_(\d+)", folder_signature)
+    if kernel_match:
+        kernel_size_ckpt = int(kernel_match.group(1))
+        if cnn1d_params.get("kernel_size") != kernel_size_ckpt:
+            print(
+                f"Updating kernel_size from {cnn1d_params.get('kernel_size')} to {kernel_size_ckpt} based on checkpoint"
+            )
+            cnn1d_params["kernel_size"] = kernel_size_ckpt
 
     net_parameters = {
         "channels": [
@@ -360,6 +515,7 @@ if "cnn_1d" in methods:
     cnn = cnn1d_net(**net_parameters)
     cnn.load_state_dict(torch.load(cnn_model_path))
     cnn.eval()
+    cnn_model_name = os.path.relpath(cnn_model_path, train_results_path)
 
 
 if "lstm" in methods:
@@ -495,7 +651,7 @@ noise_cov = mne.compute_raw_covariance(raw_noise)
 
 noise_only_eeg_data = []
 #################################
-if args.eval_simu_type == "sereega":
+if args.eval_simu_type.lower() == "sereega":
     md_keys = [k for k, _ in val_ds.dataset.md_dict.items()]
 c = 0
 nf=0
@@ -526,7 +682,7 @@ for k in val_ds.indices:
     data_cov = 1
     if data_cov is not None:
         ## ici il y a un distinction à faire selon les jeux de données
-        if args.eval_simu_type == "sereega":
+        if args.eval_simu_type.lower() == "sereega":
             seeds = val_ds.dataset.md_dict[md_keys[k]]["seeds"]
             if type(seeds) is int:
                 seeds = [seeds]
@@ -534,6 +690,10 @@ for k in val_ds.indices:
             seeds = list(val_ds.dataset.dataset_meta["selected_region"][k][:, 0])
             if type(seeds) is int:
                 seeds = [seeds]
+
+        seeds = [int(s) for s in seeds]
+        if len(seeds) > 0 and max(seeds) >= head_model.source_space.n_sources:
+            seeds = [s - 1 for s in seeds]
 
         eeg = mne.io.RawArray(
             data=M, info=head_model.electrode_space.info, first_samp=0.0, verbose=False
@@ -642,17 +802,40 @@ for k in val_ds.indices:
                     patches[kk] = curr_lb
             else : 
                 for kk in range(len(seeds)) : 
-                    patches[kk] = val_ds.dataset.md_dict[md_keys[k]]['act_src'][f'patch_{kk+1}'] 
-            inter = list( 
-                set(patches[0]).intersection(patches[1])
-            )
-            if len(inter)>0 : # for overlapping regions : only keep seed with max activity
-                overlapping_regions += 1
-                to_keep = torch.argmax( torch.Tensor([j[seeds[0], :].abs().max(), j[seeds[1], :].abs().max() ]) )
-                seeds = [ seeds[to_keep] ]
+                    patch_vals = np.array(
+                        val_ds.dataset.md_dict[md_keys[k]]["act_src"][f"patch_{kk+1}"]
+                    ).astype(int)
+                    if patch_vals.size > 0 and patch_vals.max() >= head_model.source_space.n_sources:
+                        patch_vals = patch_vals - 1
+                    patches[kk] = patch_vals.tolist()
+            if len(patches) >= 2:
+                inter = list(
+                    set(patches[0]).intersection(patches[1])
+                )
+                if len(inter) > 0:  # for overlapping regions : only keep seed with max activity
+                    overlapping_regions += 1
+                    to_keep = torch.argmax(
+                        torch.Tensor(
+                            [
+                                j[seeds[0], :].abs().max(),
+                                j[seeds[1], :].abs().max(),
+                            ]
+                        )
+                    )
+                    seeds = [seeds[to_keep]]
             ## ----------------------
             act_src = [ s for l in patches for s in l ]
             # compute metrics -----------------------------------------------------------------
+            gt_norm = j_unscaled.clone()
+            gt_max = gt_norm.abs().max()
+            if gt_max > 0:
+                gt_norm = gt_norm / gt_max
+
+            pred_norm = j_hat.clone()
+            pred_max = pred_norm.abs().max()
+            if pred_max > 0:
+                pred_norm = pred_norm / pred_max
+
             for kk in range(len(seeds)) :
                 s = seeds[kk]
                 other_sources = np.setdiff1d(
@@ -662,12 +845,23 @@ for k in val_ds.indices:
 
                 # find estimated seed, in a neighboring area
                 eval_zone = utl.get_patch(order=5, idx=s, neighbors=neighbors)
-                ## remove sources from other patches of the eval zone (case of close sources regions) ##
-                eval_zone = np.setdiff1d(eval_zone, other_sources)
+                # remove sources from other patches of the eval zone (case of close sources regions)
+                eval_zone = np.setdiff1d(eval_zone, other_sources, assume_unique=True)
+                if eval_zone.size == 0:
+                    eval_zone = np.array([s])
 
-                # find estimated seed, in a neighboring area
-                eval_zone = utl.get_patch(order=2, idx=s, neighbors=neighbors)
-                s_hat = eval_zone[torch.argmax(j_hat[eval_zone, t_eval_gt].abs())]
+                tighter_zone = utl.get_patch(order=2, idx=s, neighbors=neighbors)
+                tighter_zone = np.setdiff1d(tighter_zone, other_sources, assume_unique=True)
+                if tighter_zone.size > 0:
+                    eval_zone = tighter_zone
+
+                if s not in eval_zone:
+                    eval_zone = np.append(eval_zone, s)
+
+                eval_zone = np.unique(eval_zone).astype(int, copy=False)
+
+                eval_zone_idx = torch.as_tensor(eval_zone, device=j_hat.device, dtype=torch.long)
+                s_hat = eval_zone_idx[torch.argmax(j_hat[eval_zone_idx, t_eval_gt].abs())].item()
 
                 t_eval_pred = torch.argmax(j_hat[s_hat, :].abs())
 
@@ -678,9 +872,7 @@ for k in val_ds.indices:
                 )  # probablement peut mieux faire
 
                 #nmse += met.nmse_t_fn(j_unscaled, j_hat, t_eval_gt)
-                nmse_tmp = ( (
-                    j_unscaled[:,t_eval_gt] / j_unscaled[:,t_eval_gt].abs().max() - j_hat[:,t_eval_gt] / j_hat[:,t_eval_gt].abs().max() 
-                    )**2 ).mean()
+                nmse_tmp = ((gt_norm[:, t_eval_gt] - pred_norm[:, t_eval_gt]) ** 2).mean().item()
                 nmse += nmse_tmp
                 
                 seeds_hat.append(s_hat)
@@ -691,26 +883,29 @@ for k in val_ds.indices:
             auc_val = auc_val / len(seeds)
             tmaxs_pred = torch.argmax(j_hat[seeds_hat, :].abs(), dim=1)
             # time error (error on the instant of the max. activity):
-            time_error_dict[method][c] = te
+            time_error_dict[method][c] = float(te)
             # print(f"time error: {time_error*1e3} [ms]")
 
             # localisation error
-            loc_error_dict[method][c] = le
+            loc_error_dict[method][c] = float(le)
             # print(f"localisation error: {loc_error*1e3} [mm]")
 
             # instant nMSE:
-            nmse_dict[method][c] = nmse
+            nmse_dict[method][c] = float(nmse)
             # print(f"nmse at instant of max activity: {nmse_t:.4f}")
 
             # PSNR
-            psnr_dict[method][c] = psnr(
-                (j_unscaled / j_unscaled.abs().max()).numpy(),
-                (j_hat / j_hat.abs().max()).numpy(),
-                data_range=(
-                    (j_unscaled / j_unscaled.abs().max()).min()
-                    - (j_hat / j_hat.abs().max()).max()
-                ),
-            )
+            gt_np = gt_norm.detach().cpu().numpy()
+            pred_np = pred_norm.detach().cpu().numpy()
+            mse = np.mean((gt_np - pred_np) ** 2)
+            if mse <= 0:
+                psnr_val = float("inf")
+            else:
+                data_range = gt_np.max() - gt_np.min()
+                if data_range <= 0:
+                    data_range = 1.0
+                psnr_val = float(10.0 * np.log10((data_range ** 2) / mse))
+            psnr_dict[method][c] = psnr_val
             # print(f"psnr for total source distrib: {psnr_val:.4f} [dB]")
 
             # AUC

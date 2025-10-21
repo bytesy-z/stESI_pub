@@ -101,7 +101,7 @@ def get_patch(order, idx, neighbors):
         for _ in range(order): 
             neighb = np.unique( neighbors[new_idx,:] )
             #neighb = neighb[~np.isnan(neighb)].astype(np.int64)
-            neighb = neighb[neighb>0].astype(np.int64)
+            neighb = neighb[neighb>0].astype(np.int64) - 1
             #neighb = np.array(neighb, dtype=np.int64)
 
             #print(f"neighbors: {neighb}")

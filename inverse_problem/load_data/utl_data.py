@@ -1,8 +1,11 @@
 # utils to manipulate data
+import json
+import os
+import sys
+from pathlib import Path
+
 import numpy as np
-import torch 
-import json 
-import sys 
+import torch
 from scipy.io import loadmat
 ##########################
 # Loading functions
@@ -263,17 +266,25 @@ def get_matching_info(data_folder_name, general_config_dict, root_simu):
     # get the list of ids of the different files
     ids = list(match_dict.keys())
     ## rename (quick fix) ##
+    root_path = Path(root_simu)
+    root_parent = root_path.parent
+
+    def _resolve_path(rel_path: str) -> str:
+        candidate = Path(rel_path)
+        if candidate.is_absolute():
+            return str(candidate)
+        if candidate.parts and candidate.parts[0] == root_path.name:
+            return str((root_parent / candidate).resolve())
+        return str((root_path / candidate).resolve())
+
     eeg_dict = {}
     src_dict = {}
     md_dict = {}
-    for k in range( len(ids) ) :
-        eeg_file_name = match_dict[f"{ids[k]}"][f"eeg_file_name"]
-        act_src_file_name = match_dict[f"{ids[k]}"][f"act_src_file_name"]
-        md_file_name = match_dict[f"{ids[k]}"][f"md_json_file_name"]
-        
-        eeg_dict[f"{ids[k]}"] = replace_root(root_simu, eeg_file_name)
-        src_dict[f"{ids[k]}"] = replace_root(root_simu, act_src_file_name)
-        md_dict[f"{ids[k]}"] = replace_root(root_simu, md_file_name)
+    for k in range(len(ids)):
+        entry = match_dict[f"{ids[k]}"]
+        eeg_dict[f"{ids[k]}"] = _resolve_path(entry[f"eeg_file_name"])
+        src_dict[f"{ids[k]}"] = _resolve_path(entry[f"act_src_file_name"])
+        md_dict[f"{ids[k]}"] = _resolve_path(entry[f"md_json_file_name"])
 
     return ids, eeg_dict, src_dict, md_dict
 

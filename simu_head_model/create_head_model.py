@@ -64,14 +64,14 @@ if __name__ == "__main__":
         "-dps",
         "--deepsif_anatpath",
         type=str,
-        default=f"{os.path.expanduser('~')}/Documents/Data",
+        default=f"/home/zik/UniStuff/FYP/stESI_pub",
         help="Name of the folder in which the deepsif anatomy data are saved (if subject_name==deepsif)",
     )
 
     parser.add_argument(
         "-data_path",
         type=str,
-        default=f"{os.path.expanduser('~')}/Documents/Data",
+        default=f"/home/zik/UniStuff/FYP/stESI_pub",
         help="Name of the folder in which to save simulation data",
     )
 

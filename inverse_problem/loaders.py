@@ -79,7 +79,7 @@ class EsiDatasetds_new(Dataset):
         else:
             self.ori = "unconstrained"
         # build data folder name
-        data_folder_name = f"{home}/Documents/Data/simulation/{self.ori}/{self.electrode_montage}/{self.source_space}/simu"
+        data_folder_name = f"{self.root_simu}/{self.ori}/{self.electrode_montage}/{self.source_space}/simu"
 
         (
             self.ids,
@@ -613,8 +613,8 @@ class EsiDatasetds(Dataset):
             self.ori = "constrained"
         else:
             self.ori = "unconstrained"
-        # build data folder name
-        data_folder_name = f"{home}/Documents/Data/simulation/{self.ori}/{self.electrode_montage}/{self.source_space}/simu"
+    # build data folder name
+    data_folder_name = f"{self.root_simu}/{self.ori}/{self.electrode_montage}/{self.source_space}/simu"
 
         ids, eeg_dict, src_dict, md_dict = utl_data.get_matching_info(
             data_folder_name, self.general_config_dict

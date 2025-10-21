@@ -42,7 +42,6 @@ parser = argparse.ArgumentParser(fromfile_prefix_chars="@")
 
 #argument to load the data
 parser.add_argument("simu_name", type=str, help="name of the simulation")
-parser.add_argument("-root_simu", type=str, required=True, help="path to the folder containing data")
 parser.add_argument("-results_path", type=str, required=True, help="where to save results")
 
 parser.add_argument("-orientation", type=str, default="constrained", help="constrained or unconstrained, orientation of the sources")
@@ -120,11 +119,16 @@ args = parser.parse_args()
 results_path = f"{args.results_path}/{args.simu_name}{args.source_space}_/{args.sfolder}"
 os.makedirs(f"{results_path}/{args.sfolder}", exist_ok=True)
 ## -------------------------------------- LOAD DATA ----------------------------------------------- ##
-root_simu = args.root_simu
+simulation_root = "/home/zik/UniStuff/FYP/stESI_pub/simulation/fsaverage"
 
-simu_path = f"{root_simu}/{args.orientation}/{args.electrode_montage}/{args.source_space}/simu/{args.simu_name}"
-model_path = f"{root_simu}/{args.orientation}/{args.electrode_montage}/{args.source_space}/model"
-
+simu_path = (
+    f"{simulation_root}/{args.orientation}/{args.electrode_montage}/"
+    f"{args.source_space}/simu/{args.simu_name}"
+)
+model_path = (
+    f"{simulation_root}/{args.orientation}/{args.electrode_montage}/"
+    f"{args.source_space}/model"
+)
 
 config_file = f"{simu_path}/{args.simu_name}{args.source_space}_config.json"
 
@@ -133,16 +137,18 @@ with open(config_file, "r") as f:
 general_config_dict["eeg_snr"] = args.eeg_snr
 general_config_dict["simu_name"] = args.simu_name
 
-folders = FolderStructure(root_simu, general_config_dict)
+folders = FolderStructure(simulation_root, general_config_dict)
 source_space_obj = HeadModel.SourceSpace(folders, general_config_dict)
 
 # load the proper leadfield for the regional source space :
-if args.source_space == "fsav_994":
-    fwd = loadmat(f"{model_path}/LF_fsav_994.mat")["G"]
-# else ? ## TODO
+# All leadfield files are saved with variable name 'G' by create_head_model.py
+fwd = loadmat(f"{model_path}/LF_{args.source_space}.mat")['G']
 ############################### LOAD DATA ################################
 if args.simu_type.upper() == "NMM":
-    spikes_data_path = f"{root_simu}/{args.orientation}/{args.electrode_montage}/{args.source_space}/simu/{args.spikes_folder}"
+    spikes_data_path = (
+        f"{simulation_root}/{args.orientation}/{args.electrode_montage}/"
+        f"{args.source_space}/simu/{args.spikes_folder}"
+    )
     dataset_meta_path = f"{simu_path}/{args.simu_name}.mat"
 
     ds_dataset = ModSpikeEEGBuild(
@@ -156,15 +162,15 @@ if args.simu_type.upper() == "NMM":
     )
 
 elif args.simu_type.upper() == "SEREEGA":
-    simu_data_path = f"{home}/Documents/Data/simulation"
+    simu_data_path = simu_path
     config_file = f"{simu_data_path}/{args.simu_name}{args.source_space}_config.json"
 
     ds_dataset = EsiDatasetds_new(
-        root_simu,
+        simulation_root,
         config_file,
         args.simu_name,
         args.source_space,
-        "standard_1020",
+        args.electrode_montage,
         args.to_load,
         args.eeg_snr,
         noise_type={"white": 1.0, "pink": 0.0},
