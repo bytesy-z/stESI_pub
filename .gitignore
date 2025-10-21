@@ -23,3 +23,5 @@ simu_sereega/*.csv
 *.npy
 *.txt
 *.mat
+simulation/
+results/

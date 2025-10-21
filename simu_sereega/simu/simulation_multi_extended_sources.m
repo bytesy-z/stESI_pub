@@ -8,7 +8,7 @@ simu_name       = 'mes_debug';
 n_examples      = 100; 
 
 
-root_folder     = '/home/reynaudsarah/Documents/Data';
+root_folder     = '/home/zik/UniStuff/FYP/stESI_pub';
 do_save         = true; 
 
 constrained_orientation = true; % orientation of sources.
@@ -107,11 +107,21 @@ if do_save
     saving_folder = fullfile(saving_folder, simu_name ); 
     
      
-    mkdir( fullfile( saving_folder, '/sources/Jact') );
-    mkdir( fullfile( saving_folder, '/sources/Jnoise') ); 
-    mkdir( fullfile( saving_folder, '/eeg/infdb') ); 
-    mkdir( fullfile( saving_folder, '/md') ); 
-    mkdir( fullfile( saving_folder, '/timeline') ); 
+    if exist(fullfile(saving_folder, '/sources/Jact'), 'dir') ~= 7
+        mkdir( fullfile( saving_folder, '/sources/Jact') );
+    end
+    if exist(fullfile(saving_folder, '/sources/Jnoise'), 'dir') ~= 7
+        mkdir( fullfile( saving_folder, '/sources/Jnoise') );
+    end
+    if exist(fullfile(saving_folder, '/eeg/infdb'), 'dir') ~= 7
+        mkdir( fullfile( saving_folder, '/eeg/infdb') );
+    end
+    if exist(fullfile(saving_folder, '/md'), 'dir') ~= 7
+        mkdir( fullfile( saving_folder, '/md') );
+    end
+    if exist(fullfile(saving_folder, '/timeline'), 'dir') ~= 7
+        mkdir( fullfile( saving_folder, '/timeline') );
+    end
 end
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
