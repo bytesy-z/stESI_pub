@@ -189,8 +189,8 @@ source_space = HeadModel.SourceSpace(folders, general_config_dict)
 electrode_space = HeadModel.ElectrodeSpace(folders, general_config_dict)
 head_model = HeadModel.HeadModel(electrode_space, source_space, folders, "fsaverage")
 
-if args.source_space == "fsav_994" : 
-    fwd = loadmat(f"{model_path}/LF_fsav_994.mat")["G"]
+if args.source_space in ["fsav_994", "ico3"] : 
+    fwd = loadmat(f"{model_path}/LF_{args.source_space}.mat")["G"]
 else : 
     fwd = head_model.fwd['sol']['data']
 

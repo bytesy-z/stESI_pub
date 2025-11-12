@@ -7,6 +7,8 @@ __pycache__/
 simu_head_model/__pycache__/
 simu_nmm
 
+frontend/node_modules/
+
 simu_sereega/docs/
 simu_sereega/leadfield/
 simu_sereega/generate/

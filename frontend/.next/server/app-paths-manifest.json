@@ -1,0 +1,4 @@
+{
+  "/api/analyze-eeg/route": "app/api/analyze-eeg/route.js",
+  "/page": "app/page.js"
+}
