@@ -4,26 +4,43 @@ import { useEffect, useState } from "react"
 import { Card } from "@/components/ui/card"
 import { Loader2 } from "lucide-react"
 
-export function ProcessingWindow() {
+interface ProcessingWindowProps {
+  elapsedTime?: number
+}
+
+export function ProcessingWindow({ elapsedTime = 0 }: ProcessingWindowProps) {
   const [progress, setProgress] = useState(0)
+  const [internalElapsed, setInternalElapsed] = useState(0)
 
   useEffect(() => {
     const interval = setInterval(() => {
       setProgress((prev) => {
-        if (prev >= 90) return 90
-        return Math.min(90, prev + Math.random() * 20)
+        if (prev >= 95) return 95
+        return Math.min(95, prev + Math.random() * 5)
       })
-    }, 500)
+      setInternalElapsed(prev => prev + 1)
+    }, 1000)
 
     return () => clearInterval(interval)
   }, [])
 
+  const displayElapsed = elapsedTime > 0 ? elapsedTime : internalElapsed
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    if (mins > 0) {
+      return `${mins}m ${secs}s`
+    }
+    return `${secs}s`
+  }
+
   const steps = [
-    { name: "Validating EDF Format", completed: progress > 10 },
-    { name: "Loading Signal Data", completed: progress > 30 },
-    { name: "Preprocessing Signals", completed: progress > 50 },
-    { name: "Computing Source Localization", completed: progress > 70 },
-  { name: "Generating 3D Brain Maps", completed: progress >= 90 },
+    { name: "Validating File Format", completed: displayElapsed > 1 },
+    { name: "Loading Signal Data", completed: displayElapsed > 3 },
+    { name: "Preprocessing Signals", completed: displayElapsed > 10 },
+    { name: "Computing Source Localization", completed: displayElapsed > 30 },
+    { name: "Generating 3D Brain Maps", completed: displayElapsed > 60 },
   ]
 
   return (
@@ -32,6 +49,12 @@ export function ProcessingWindow() {
         <div className="flex items-center justify-center mb-8">
           <Loader2 className="w-8 h-8 text-primary animate-spin mr-3" />
           <h2 className="text-2xl font-semibold text-foreground">Processing EEG Data</h2>
+        </div>
+
+        {/* Timer */}
+        <div className="text-center mb-6">
+          <span className="text-3xl font-mono text-primary">{formatTime(displayElapsed)}</span>
+          <p className="text-sm text-muted-foreground mt-1">Elapsed time</p>
         </div>
 
         {/* Progress Bar */}
@@ -68,7 +91,11 @@ export function ProcessingWindow() {
 
         <div className="mt-8 p-4 bg-muted/30 rounded-lg border border-border">
           <p className="text-xs text-muted-foreground text-center">
-            This may take a few minutes depending on the file size and complexity
+            Processing in background. This page will update automatically when complete.
+            <br />
+            <span className="text-amber-500">Long EEG recordings may take 5-15 minutes.</span>
+            <br />
+            <span className="text-blue-400 font-mono text-xs">Check browser console (F12) for debugging info</span>
           </p>
         </div>
       </div>

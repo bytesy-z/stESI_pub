@@ -5,19 +5,41 @@ import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { RotateCcw } from "lucide-react"
 import { BrainVisualization } from "./brain-visualization"
+import { AnimatedBrainVisualization } from "./animated-brain-visualization"
+
+interface EvaluationMetrics {
+  mean_nmse: number
+  mean_auc: number
+  mean_localization_error_mm: number
+  mean_time_error_ms?: number
+  best_window_nmse?: number
+  best_window_auc?: number
+  best_window_localization_error_mm?: number
+  n_windows?: number
+}
 
 interface OutputWindowProps {
   result: {
     fileName: string
+    fileType?: "edf" | "mat"
     uploadTime: string
     processingTime: number
     plotHtml: string
+    animationFile?: string
+    outputDir?: string
+    hasGroundTruth?: boolean
+    metrics?: EvaluationMetrics
+    nWindowsProcessed?: number
+    sourceFile?: string
   }
   onNewAnalysis: () => void
 }
 
 export function OutputWindow({ result, onNewAnalysis }: OutputWindowProps) {
   const [activeTab, setActiveTab] = useState<"visualization" | "details">("visualization")
+
+  const isSimulation = result.fileType === "mat"
+  const hasMetrics = result.hasGroundTruth && result.metrics
 
   return (
     <div className="space-y-6">
@@ -27,6 +49,11 @@ export function OutputWindow({ result, onNewAnalysis }: OutputWindowProps) {
           <h2 className="text-2xl font-semibold text-white">Analysis Complete</h2>
           <p className="text-sm text-slate-300 mt-1">
             File: <span className="font-medium text-white">{result.fileName}</span>
+            {isSimulation && (
+              <span className="ml-2 px-2 py-0.5 bg-emerald-500/20 text-emerald-300 text-xs rounded-full">
+                Simulation
+              </span>
+            )}
           </p>
         </div>
         <div className="flex gap-3 w-full sm:w-auto">
@@ -63,8 +90,14 @@ export function OutputWindow({ result, onNewAnalysis }: OutputWindowProps) {
 
       {/* Content */}
       {activeTab === "visualization" && (
-        <Card className="bg-card border border-border">
-          <BrainVisualization plotHtml={result.plotHtml} />
+        <Card className="bg-card border border-border h-[600px] overflow-hidden">
+          {result.animationFile && result.outputDir ? (
+            <AnimatedBrainVisualization 
+              animationFilePath={`${result.outputDir}/${result.animationFile}`}
+            />
+          ) : (
+            <BrainVisualization plotHtml={result.plotHtml} />
+          )}
         </Card>
       )}
 
@@ -78,6 +111,12 @@ export function OutputWindow({ result, onNewAnalysis }: OutputWindowProps) {
                 <div>
                   <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">File Name</p>
                   <p className="text-sm text-slate-200 mt-1">{result.fileName}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">File Type</p>
+                  <p className="text-sm text-slate-200 mt-1">
+                    {isSimulation ? "Simulation (MAT)" : "Recording (EDF)"}
+                  </p>
                 </div>
                 <div>
                   <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Upload Time</p>
@@ -94,6 +133,12 @@ export function OutputWindow({ result, onNewAnalysis }: OutputWindowProps) {
                   <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Processing Time</p>
                   <p className="text-sm text-slate-200 mt-1">{result.processingTime.toFixed(2)}s</p>
                 </div>
+                {result.nWindowsProcessed && (
+                  <div>
+                    <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Windows Processed</p>
+                    <p className="text-sm text-slate-200 mt-1">{result.nWindowsProcessed}</p>
+                  </div>
+                )}
                 <div>
                   <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Status</p>
                   <p className="text-sm text-emerald-300 font-medium mt-1">✓ Completed Successfully</p>
@@ -101,8 +146,75 @@ export function OutputWindow({ result, onNewAnalysis }: OutputWindowProps) {
               </div>
             </div>
           </div>
+
+          {/* Evaluation Metrics (only for simulations with ground truth) */}
+          {hasMetrics && result.metrics && (
+            <div className="mt-8 pt-6 border-t border-border/60">
+              <h3 className="text-lg font-semibold text-white mb-4">
+                Evaluation Metrics
+                <span className="ml-2 text-xs font-normal text-slate-400">(Ground Truth Available)</span>
+              </h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <MetricCard
+                  label="Mean nMSE"
+                  value={result.metrics.mean_nmse.toFixed(4)}
+                  description="Normalized Mean Squared Error"
+                />
+                <MetricCard
+                  label="Mean AUC"
+                  value={result.metrics.mean_auc.toFixed(4)}
+                  description="Area Under ROC Curve"
+                  highlight={result.metrics.mean_auc > 0.7}
+                />
+                <MetricCard
+                  label="Localization Error"
+                  value={`${result.metrics.mean_localization_error_mm.toFixed(2)} mm`}
+                  description="Mean Distance to True Source"
+                  highlight={result.metrics.mean_localization_error_mm < 20}
+                />
+                {result.metrics.best_window_localization_error_mm !== undefined && (
+                  <MetricCard
+                    label="Best Window Error"
+                    value={`${result.metrics.best_window_localization_error_mm.toFixed(2)} mm`}
+                    description="Localization Error at Peak"
+                  />
+                )}
+              </div>
+              {result.sourceFile && (
+                <p className="text-xs text-slate-500 mt-4">
+                  Ground truth source: {result.sourceFile}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Note for EDF files */}
+          {!isSimulation && (
+            <div className="mt-8 pt-6 border-t border-border/60">
+              <p className="text-sm text-slate-400">
+                <span className="text-slate-300 font-medium">Note:</span> Evaluation metrics are only available for simulation files (MAT format) where ground truth source locations are known.
+              </p>
+            </div>
+          )}
         </Card>
       )}
+    </div>
+  )
+}
+
+interface MetricCardProps {
+  label: string
+  value: string
+  description: string
+  highlight?: boolean
+}
+
+function MetricCard({ label, value, description, highlight }: MetricCardProps) {
+  return (
+    <div className={`p-4 rounded-lg ${highlight ? 'bg-emerald-500/10 border border-emerald-500/30' : 'bg-slate-800/50'}`}>
+      <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">{label}</p>
+      <p className={`text-xl font-bold mt-1 ${highlight ? 'text-emerald-300' : 'text-white'}`}>{value}</p>
+      <p className="text-xs text-slate-500 mt-1">{description}</p>
     </div>
   )
 }

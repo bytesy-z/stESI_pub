@@ -57,7 +57,7 @@ export function FileUploadSection({ onFileUpload }: FileUploadSectionProps) {
             <Upload className="w-8 h-8 text-[#52c4a0] text-secondary" />
           </div>
           <h3 className="text-lg font-semibold text-slate-100 mb-2">Upload EEG File</h3>
-          <p className="text-sm text-slate-400 mb-4">Drag and drop your EDF file here or click to browse</p>
+          <p className="text-sm text-slate-400 mb-4">Drag and drop your EDF or MAT file here or click to browse</p>
 
           <Button
             onClick={() => fileInputRef.current?.click()}
@@ -65,7 +65,8 @@ export function FileUploadSection({ onFileUpload }: FileUploadSectionProps) {
           >
             Select EEG File
           </Button>
-          <input ref={fileInputRef} type="file" accept=".edf" onChange={handleFileSelect} className="hidden" />
+          <input ref={fileInputRef} type="file" accept=".edf,.mat" onChange={handleFileSelect} className="hidden" />
+          <p className="text-xs text-slate-500 mt-3">Supported formats: EDF (real recordings), MAT (simulations)</p>
         </div>
       </Card>
     </div>

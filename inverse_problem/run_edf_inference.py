@@ -1,3 +1,8 @@
+#############################
+# TEST MODE CONFIGURATION   #
+#############################
+# Set this to True to limit max_windows to 100 for fast testing
+
 #!/usr/bin/env python3
 """Convert long-form EDF recordings to the 1dCNN input format, run inference, and emit plots."""
 
@@ -17,6 +22,7 @@ import numpy as np
 import torch
 from scipy.io import savemat
 
+TEST_MODE = True  # <-- Set to True to enable test mode
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 
@@ -146,6 +152,85 @@ def _load_model(
     return model
 
 
+def _apply_exponential_smoothing(
+    activity_timeline: np.ndarray,
+    alpha: float,
+) -> np.ndarray:
+    """
+    Apply exponential moving average (EMA) smoothing to source activity timeline.
+    
+    Uses bidirectional smoothing (forward + backward pass) to eliminate phase lag.
+    Recommended alpha=0.5-0.7 for light visualization smoothing.
+    WARNING: Heavy smoothing (alpha<0.3) degrades localization accuracy by ~80%.
+    
+    Args:
+        activity_timeline: (n_sources, n_frames) array
+        alpha: Smoothing parameter (0-1). Higher = less smoothing.
+        
+    Returns:
+        smoothed: (n_sources, n_frames) array
+    """
+    if alpha < 0 or alpha > 1:
+        raise ValueError(f"alpha must be in [0, 1], got {alpha}")
+    
+    smoothed = activity_timeline.copy()
+    n_sources, n_frames = smoothed.shape
+    
+    # Forward pass
+    for t in range(1, n_frames):
+        smoothed[:, t] = alpha * smoothed[:, t] + (1 - alpha) * smoothed[:, t - 1]
+    
+    # Backward pass (eliminate phase lag)
+    for t in range(n_frames - 2, -1, -1):
+        smoothed[:, t] = alpha * smoothed[:, t] + (1 - alpha) * smoothed[:, t + 1]
+    
+    return smoothed
+
+
+def _prepare_animation_timeline(
+    all_predictions: List[dict],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Prepare animation timeline with one frame per window (no interpolation).
+    
+    Each window gets exactly one frame showing the peak activity timepoint.
+    This preserves the actual predictions without artificial smoothing.
+    
+    Args:
+        all_predictions: List of dicts with keys 'window_idx', 'start_time', 
+                        'end_time', 'predictions', 'max_abs'
+        
+    Returns:
+        activity_timeline: (n_sources, n_frames) array with one frame per window
+        timestamps: (n_frames,) array of timestamp for each frame in seconds
+    """
+    if not all_predictions:
+        raise ValueError("all_predictions list is empty")
+    
+    n_windows = len(all_predictions)
+    n_sources = all_predictions[0]['predictions'].shape[0]
+    
+    # Initialize output arrays
+    activity_timeline = np.zeros((n_sources, n_windows), dtype=np.float32)
+    timestamps = np.zeros(n_windows, dtype=np.float32)
+    
+    # For each window, use the peak activity timepoint
+    for i, window in enumerate(all_predictions):
+        win_pred = window['predictions']  # (n_sources, n_timepoints)
+        
+        # Find peak activity timepoint across all sources
+        total_activity = np.abs(win_pred).sum(axis=0)
+        peak_idx = np.argmax(total_activity)
+        
+        # Use activity at peak timepoint
+        activity_timeline[:, i] = win_pred[:, peak_idx]
+        
+        # Timestamp is the window center
+        timestamps[i] = (window['start_time'] + window['end_time']) / 2.0
+    
+    return activity_timeline, timestamps
+
+
 def _compute_window_score(pred: torch.Tensor) -> Tuple[float, int]:
     energy = pred.abs().sum(dim=0)
     peak_idx = int(torch.argmax(energy).item())
@@ -255,11 +340,28 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="If set, drop the trailing window instead of padding to full length.",
     )
+    parser.add_argument(
+        "--use_global_norm",
+        action="store_true",
+        help="If set, use global 99th percentile normalization instead of per-window max. Reduces artificial amplitude variations.",
+    )
+    parser.add_argument(
+        "--smoothing_alpha",
+        type=float,
+        default=None,
+        help="Optional temporal smoothing parameter (0-1). Use 0.5-0.7 for light visualization smoothing. WARNING: heavy smoothing (<0.3) degrades localization accuracy.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
+
     args = parse_args()
+
+    # Override max_windows if TEST_MODE is enabled
+    if TEST_MODE:
+        print("[TEST MODE] Limiting max_windows to 100 for fast testing.")
+        args.max_windows = 100
 
     repo_root = REPO_ROOT
     edf_path = Path(args.edf_path).expanduser().resolve()
@@ -353,9 +455,20 @@ def main() -> None:
     data = full_raw.get_data()
     leadfield = torch.from_numpy(head_model.fwd["sol"]["data"]).float()
 
+    # Compute global normalization factor (99th percentile)
+    if args.use_global_norm:
+        global_max_abs = float(np.percentile(np.abs(data), 99))
+        if global_max_abs <= 0:
+            raise ValueError("Global 99th percentile of EEG data is zero. Cannot normalize.")
+        print(f"Using global normalization: 99th percentile = {global_max_abs:.6e}")
+    else:
+        global_max_abs = None
+        print("Using per-window normalization (default)")
+
     segment_summaries: List[SegmentSummary] = []
     best_window: Optional[BestWindow] = None
     any_segment = False
+    all_window_predictions: List[Dict] = []
 
     for seg_idx, item in enumerate(
         _segment_signal(
@@ -368,10 +481,15 @@ def main() -> None:
     ):
         any_segment = True
         start_sample, segment = item
-        max_abs = float(np.abs(segment).max())
-        if max_abs <= 0:
-            print(f"Skipping window {seg_idx} because it contains zero variance.")
-            continue
+        
+        # Use global or per-window normalization
+        if global_max_abs is not None:
+            max_abs = global_max_abs
+        else:
+            max_abs = float(np.abs(segment).max())
+            if max_abs <= 0:
+                print(f"Skipping window {seg_idx} because it contains zero variance.")
+                continue
 
         mat_path = segments_dir / f"segment_{seg_idx:04d}.mat"
         _save_segment_to_mat(segment, mat_path)
@@ -396,6 +514,15 @@ def main() -> None:
         )
         score, peak_idx = _compute_window_score(pred)
         peak_activity = pred[:, peak_idx].abs().cpu().numpy()
+
+        # Store predictions from ALL windows for animation
+        all_window_predictions.append({
+            'window_idx': seg_idx,
+            'start_time': start_sample / fs,
+            'end_time': (start_sample + window_samples) / fs,
+            'predictions': pred.detach().cpu().numpy(),
+            'max_abs': max_abs,
+        })
 
         if best_window is None or score > best_window.score:
             best_window = BestWindow(
@@ -461,6 +588,89 @@ def main() -> None:
             f,
             indent=2,
         )
+
+    # Generate animation data if we have multiple windows or overlapping data
+    if len(all_window_predictions) > 0:
+        print(f"Generating animation data from {len(all_window_predictions)} windows...")
+        
+        # Prepare animation timeline (one frame per window)
+        activity_timeline, timestamps = _prepare_animation_timeline(
+            all_window_predictions
+        )
+        
+        # Apply temporal smoothing if requested
+        if args.smoothing_alpha is not None:
+            print(f"Applying EMA temporal smoothing with alpha={args.smoothing_alpha:.2f}...")
+            activity_smoothed = _apply_exponential_smoothing(activity_timeline, args.smoothing_alpha)
+            
+            # Save both raw and smoothed versions
+            save_raw_too = True
+        else:
+            activity_smoothed = None
+            save_raw_too = False
+        
+        # Extract triangles from brain geometry surfaces
+        triangles_list = []
+        mesh_vertices_list = []
+        vertex_offset = 0
+        for surf in geom.surfaces:
+            # Collect mesh vertices (full cortical surface)
+            mesh_vertices_list.append(surf.vertices_mm)
+            # Adjust triangle indices for concatenated vertices
+            adjusted_faces = surf.faces + vertex_offset
+            triangles_list.append(adjusted_faces)
+            vertex_offset += len(surf.vertices_mm)
+        
+        triangles = np.vstack(triangles_list).astype(np.int32)
+        mesh_vertices = np.vstack(mesh_vertices_list).astype(np.float32)
+        
+        # Calculate actual FPS based on window timing
+        if len(timestamps) > 1:
+            avg_time_between_frames = np.mean(np.diff(timestamps))
+            actual_fps = int(1.0 / avg_time_between_frames) if avg_time_between_frames > 0 else 1
+        else:
+            actual_fps = 1
+        
+        # Prepare animation data dictionary (use smoothed if available)
+        activity_to_save = activity_smoothed if activity_smoothed is not None else activity_timeline
+        
+        animation_data = {
+            'activity': activity_to_save.astype(np.float32),           # (n_sources, n_frames)
+            'timestamps': timestamps.astype(np.float32),                # (n_frames,)
+            'source_positions': np.ascontiguousarray(geom.positions_mm.astype(np.float32)),  # (n_sources, 3) - source positions for activity
+            'mesh_vertices': np.ascontiguousarray(mesh_vertices),       # (n_mesh_vertices, 3) - full cortical mesh vertices
+            'triangles': triangles,                                      # (n_triangles, 3) - references mesh_vertices
+            'fps': np.array(actual_fps, dtype=np.int32),                # scalar
+        }
+        
+        # Save as compressed NPZ
+        animation_path = output_dir / 'animation_data.npz'
+        np.savez_compressed(str(animation_path), **animation_data)
+        
+        # Calculate file size
+        file_size_mb = animation_path.stat().st_size / (1024 * 1024)
+        print(f"Saved animation data to {animation_path}")
+        print(f"  - {len(timestamps)} frames (1 per window) at ~{actual_fps} FPS ({timestamps[-1]:.2f}s duration)")
+        print(f"  - {len(geom.positions_mm)} sources, {len(mesh_vertices)} mesh vertices, {len(triangles)} triangles")
+        print(f"  - File size: {file_size_mb:.2f} MB")
+        if activity_smoothed is not None:
+            print(f"  - Applied EMA smoothing (alpha={args.smoothing_alpha:.2f})")
+        
+        # Optionally save raw version if smoothing was applied
+        if save_raw_too:
+            animation_data_raw = {
+                'activity': activity_timeline.astype(np.float32),
+                'timestamps': timestamps.astype(np.float32),
+                'source_positions': np.ascontiguousarray(geom.positions_mm.astype(np.float32)),
+                'mesh_vertices': np.ascontiguousarray(mesh_vertices),
+                'triangles': triangles,
+                'fps': np.array(actual_fps, dtype=np.int32),
+            }
+            animation_path_raw = output_dir / 'animation_data_raw.npz'
+            np.savez_compressed(str(animation_path_raw), **animation_data_raw)
+            file_size_raw_mb = animation_path_raw.stat().st_size / (1024 * 1024)
+            print(f"Saved raw (unsmoothed) animation data to {animation_path_raw}")
+            print(f"  - File size: {file_size_raw_mb:.2f} MB")
 
     if args.open_plot:
         webbrowser.open(interactive_path.as_uri())

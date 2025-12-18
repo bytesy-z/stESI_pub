@@ -1,4 +1,6 @@
 {
   "/api/analyze-eeg/route": "app/api/analyze-eeg/route.js",
+  "/api/job-status/route": "app/api/job-status/route.js",
+  "/api/serve-result/[...path]/route": "app/api/serve-result/[...path]/route.js",
   "/page": "app/page.js"
 }
